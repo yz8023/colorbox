@@ -9,11 +9,15 @@ import android.net.Uri;
 import android.os.Bundle;
 
 /**
- * 跨进程开关通道（导出 Provider，LSPosed/FPA/LSPatch 全兼容）。
+ * 跨进程配置通道（exported Provider，LSPosed / FPA / LSPatch 全兼容）。
  *
- * Hook 侧调用：
- *   call(Uri("content://com.xiaokan.colorbox.hookstate"), "enabled", 目标包名, null) → {v:boolean}
- *   call(Uri(...), "cfgall", null, null) → 全量功能配置（b_ 布尔 / i_ 整型 / s_ 字符串 前缀扁平化）
+ * hook 侧协议：
+ *   call("enabled", 目标包名) → { v: boolean }   该作用域是否被用户停用
+ *   call("cfgall", null)      → 全量配置（b_/i_/s_ 前缀扁平键）
+ *
+ * 数据源：
+ *   prefs "cfg"     —— 功能开关与参数（明文键存储）
+ *   prefs "settings"—— hook_master 总门控 与 hook_<pkg> 作用域级停用
  */
 public class HookStateProvider extends ContentProvider {
 
@@ -24,41 +28,37 @@ public class HookStateProvider extends ContentProvider {
 
     @Override
     public Bundle call(String method, String arg, Bundle extras) {
-        Bundle b = new Bundle();
+        Bundle out = new Bundle();
         Context c = getContext();
-        if (c == null) return b;
-        if ("enabled".equals(method) && arg != null) {
-            boolean v = true;
-            try {
-                SharedPreferences settings = c.getSharedPreferences("settings",
-                        Context.MODE_PRIVATE);
-                v = settings.getBoolean("hook_" + arg, true)
-                        && settings.getBoolean("hook_master", true);
-            } catch (Throwable ignored) {
-            }
-            b.putBoolean("v", v);
-        } else if ("cfgall".equals(method)) {
-            try {
-                SharedPreferences p = c.getSharedPreferences("cfg", Context.MODE_PRIVATE);
-                SharedPreferences settings = c.getSharedPreferences("settings",
-                        Context.MODE_PRIVATE);
-                b.putBoolean("b_hook_master", settings.getBoolean("hook_master", true));
-                for (String[] s : FeatureKeys.SWITCHES) {
-                    b.putBoolean("b_" + s[0], p.getBoolean(s[0],
-                            (Boolean) FeatureKeys.defaultValue(s[0])));
-                }
-                for (String ik : FeatureKeys.INT_KEYS) {
-                    b.putInt("i_" + ik, p.getInt(ik,
-                            (Integer) FeatureKeys.defaultValue(ik)));
-                }
-                for (String sk : FeatureKeys.STRING_KEYS) {
-                    b.putString("s_" + sk,
-                            p.getString(sk, (String) FeatureKeys.defaultValue(sk)));
-                }
-            } catch (Throwable ignored) {
-            }
+        if (c == null) {
+            return out;
         }
-        return b;
+        try {
+            SharedPreferences cfg = c.getSharedPreferences("cfg", Context.MODE_PRIVATE);
+            SharedPreferences settings = c.getSharedPreferences("settings", Context.MODE_PRIVATE);
+            if ("enabled".equals(method) && arg != null) {
+                out.putBoolean("v", settings.getBoolean("hook_" + arg, true)
+                        && settings.getBoolean(FeatureKeys.MASTER, true));
+            } else if ("cfgall".equals(method)) {
+                export(cfg, settings, out);
+            }
+        } catch (Throwable ignored) {
+        }
+        return out;
+    }
+
+    private static void export(SharedPreferences cfg, SharedPreferences settings, Bundle b) {
+        b.putBoolean("b_" + FeatureKeys.MASTER, settings.getBoolean(FeatureKeys.MASTER, true));
+        for (String[] s : FeatureKeys.SWITCHES) {
+            b.putBoolean("b_" + s[0], cfg.getBoolean(s[0],
+                    (Boolean) FeatureKeys.defaultValue(s[0])));
+        }
+        for (String k : FeatureKeys.INT_PARAMS) {
+            b.putInt("i_" + k, cfg.getInt(k, (Integer) FeatureKeys.defaultValue(k)));
+        }
+        for (String k : FeatureKeys.STR_PARAMS) {
+            b.putString("s_" + k, cfg.getString(k, (String) FeatureKeys.defaultValue(k)));
+        }
     }
 
     @Override

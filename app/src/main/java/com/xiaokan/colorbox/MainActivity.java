@@ -2,12 +2,13 @@ package com.xiaokan.colorbox;
 
 import android.animation.ValueAnimator;
 import android.app.Activity;
-import android.content.Context;
+import android.app.AlertDialog;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
 import android.content.res.ColorStateList;
+import android.content.res.Configuration;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.RippleDrawable;
@@ -16,6 +17,7 @@ import android.os.Bundle;
 import android.view.Gravity;
 import android.view.View;
 import android.view.animation.DecelerateInterpolator;
+import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
@@ -25,9 +27,10 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 /**
- * 模块设置页。顶部标题栏 + 全宽底部导航（状态/桌面/安装/系统），
- * 功能按分区着色呈现；配置写入 SharedPreferences("cfg")，
- * 经 HookStateProvider 提供给 hook 侧，行构建器只负责返回视图。
+ * 模块设置页（套用 OShin 应用界面结构：顶栏 + 三页底部导航 + 卡片分区）。
+ *
+ * 配置直接写入明文键：prefs "cfg" 存开关与参数，prefs "settings" 存
+ * hook_master 与 hook_<pkg> 作用域停用；经 HookStateProvider 下发给 hook 侧。
  */
 public class MainActivity extends Activity {
 
@@ -40,27 +43,20 @@ public class MainActivity extends Activity {
             0xFF3D8BFF, 0xFF9F6CFF, 0xFFFF9F43, 0xFF8E9BFF, 0xFFFF9F43};
     private static final int[] GROUP_ICONS = {
             R.drawable.ic_sec_folder, R.drawable.ic_sec_shield, R.drawable.ic_sec_screenshot,
-            R.drawable.ic_sec_sliders, R.drawable.ic_sec_install, R.drawable.ic_sec_layout,
+            R.drawable.ic_sec_eye, R.drawable.ic_sec_sliders, R.drawable.ic_sec_layout,
             R.drawable.ic_sec_master, R.drawable.ic_sec_lock, R.drawable.ic_sec_eye,
             R.drawable.ic_sec_badge};
     private static final String[] GROUP_DESCS = {
             "文件夹 · 布局 · 角标", "安装校验与签名绕过", "隐私页与延迟限制",
-            "受限设置与护眼", "PMS 行为与选择器接管", "多窗口限制解除",
+            "受限设置与护眼", "选择器接管与重定向", "多窗口限制解除",
             "侧边栏能力扩展", "SafeProvider 状态伪装", "全屏翻译", "VIP 与广告清理"};
 
-    private static final int C_LAYOUT = 0xFF3D8BFF;
-    private static final int C_FOLDER = 0xFF34C3FF;
-    private static final int C_BADGE = 0xFF9F6CFF;
-    private static final int C_INSTALLER = 0xFFFF5C7A;
-    private static final int C_APPS = 0xFFFF9F43;
-    private static final int C_SHOT = 0xFF00B8A9;
-    private static final int C_PERM = 0xFF3D8BFF;
+    private static final int ACCENT_FALLBACK = 0xFF5B6CFF;
 
-    private int PAGE_BG, INK, SUB, LINE, ACCENT, CARD_BG, FIELD_BG, IDLE, NAV_BG, RIPPLE;
-    private int HERO_A, HERO_B;
+    private int pageBg, ink, sub, line, accent, cardBg, fieldBg, idle, navBg, ripple;
+    private int heroA, heroB;
     private boolean dark;
 
-    private LinearLayout pageCol;
     private FrameLayout pageHost;
     private LinearLayout bar;
     private View indicator;
@@ -76,36 +72,34 @@ public class MainActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         int mask = getResources().getConfiguration().uiMode
-                & android.content.res.Configuration.UI_MODE_NIGHT_MASK;
-        dark = mask == android.content.res.Configuration.UI_MODE_NIGHT_YES;
-        applyTheme();
+                & Configuration.UI_MODE_NIGHT_MASK;
+        dark = mask == Configuration.UI_MODE_NIGHT_YES;
+        theme();
 
-        cfg = getSharedPreferences("cfg", Context.MODE_PRIVATE);
-        hookPrefs = getSharedPreferences("settings", Context.MODE_PRIVATE);
+        cfg = getSharedPreferences("cfg", MODE_PRIVATE);
+        hookPrefs = getSharedPreferences("settings", MODE_PRIVATE);
 
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setBackgroundColor(PAGE_BG);
-
-        LinearLayout top = topBar();
-        root.addView(top, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+        root.setBackgroundColor(pageBg);
+        root.addView(topBar(), rowOf(LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
 
         ScrollView scroll = new ScrollView(this);
         scroll.setFillViewport(true);
         scroll.setOverScrollMode(View.OVER_SCROLL_NEVER);
         pageHost = new FrameLayout(this);
         scroll.addView(pageHost, new ScrollView.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT));
-        root.addView(scroll, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT));
+        root.addView(scroll, rowOf(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
 
-        root.addView(bottomNav(), new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+        root.addView(bottomNav(), rowOf(LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
 
         setContentView(root);
-        getWindow().setStatusBarColor(PAGE_BG);
-        getWindow().setNavigationBarColor(NAV_BG);
+        getWindow().setStatusBarColor(pageBg);
+        getWindow().setNavigationBarColor(navBg);
         if (Build.VERSION.SDK_INT >= 23 && !dark) {
             getWindow().getDecorView().setSystemUiVisibility(
                     View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR);
@@ -113,43 +107,44 @@ public class MainActivity extends Activity {
         bar.post(() -> select(0, false));
     }
 
-    private void applyTheme() {
-        PAGE_BG = dark ? 0xFF101014 : 0xFFF3F4F8;
-        ACCENT = dark ? 0xFF8E9BFF : 0xFF5B6CFF;
-        INK = dark ? 0xFFF2F2F4 : 0xFF191A20;
-        SUB = dark ? 0xFF96979F : 0xFF84858E;
-        LINE = (dark ? 0x1F : 0x12) << 24;
-        CARD_BG = dark ? 0xFF1A1A20 : 0xFFFFFFFF;
-        FIELD_BG = dark ? 0xFF232329 : 0xFFF1F2F6;
-        IDLE = dark ? 0xFF787980 : 0xFFB0B1BA;
-        NAV_BG = (dark ? 0xF5 : 0xFA) << 24 | (dark ? 0x17171C : 0xFFFFFF);
-        RIPPLE = (dark ? 0x30 : 0x1E) << 24 | (ACCENT & 0xFFFFFF);
-        HERO_A = dark ? 0xFF5F6BFF : 0xFF5B6CFF;
-        HERO_B = dark ? 0xFF9C5CFF : 0xFF9C5CFF;
+    // ─────────────────────────── 主题 ───────────────────────────
+
+    private void theme() {
+        pageBg = dark ? 0xFF101014 : 0xFFF3F4F8;
+        accent = dark ? 0xFF8E9BFF : 0xFF5B6CFF;
+        ink = dark ? 0xFFF2F2F4 : 0xFF191A20;
+        sub = dark ? 0xFF96979F : 0xFF84858E;
+        line = (dark ? 0x1F : 0x12) << 24;
+        cardBg = dark ? 0xFF1A1A20 : 0xFFFFFFFF;
+        fieldBg = dark ? 0xFF232329 : 0xFFF1F2F6;
+        idle = dark ? 0xFF787980 : 0xFFB0B1BA;
+        navBg = (dark ? 0xF5 : 0xFA) << 24 | (dark ? 0x17171C : 0xFFFFFF);
+        ripple = (dark ? 0x30 : 0x1E) << 24 | (accent & 0xFFFFFF);
+        heroA = accent;
+        heroB = dark ? 0xFF9C5CFF : 0xFF9C5CFF;
     }
 
-    private LinearLayout topBar() {
+    // ─────────────────────────── 顶栏与导航 ───────────────────────────
+
+    private View topBar() {
         LinearLayout top = new LinearLayout(this);
         top.setOrientation(LinearLayout.HORIZONTAL);
-        top.setGravity(Gravity.CENTER_VERTICAL | Gravity.LEFT);
+        top.setGravity(Gravity.CENTER_VERTICAL);
         top.setPadding(dp(20), dp(14), dp(20), dp(6));
 
         LinearLayout col = new LinearLayout(this);
         col.setOrientation(LinearLayout.VERTICAL);
-
         TextView title = new TextView(this);
         title.setText("ColorBox");
         title.setTextSize(21);
         title.setTypeface(Typeface.DEFAULT_BOLD);
-        title.setTextColor(INK);
+        title.setTextColor(ink);
         col.addView(title, wrap());
-
-        TextView sub = new TextView(this);
-        sub.setText("ColorOS 工具箱 · v" + versionName());
-        sub.setTextSize(11);
-        sub.setTextColor(SUB);
-        col.addView(sub, wrap(0, dp(2), 0, 0));
-
+        TextView subT = new TextView(this);
+        subT.setText("ColorOS 工具箱 · v" + versionName());
+        subT.setTextSize(11);
+        subT.setTextColor(sub);
+        col.addView(subT, wrap(0, dp(2), 0, 0));
         top.addView(col, new LinearLayout.LayoutParams(0,
                 LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
 
@@ -157,10 +152,10 @@ public class MainActivity extends Activity {
         chip.setText("LSPosed");
         chip.setTextSize(10);
         chip.setTypeface(Typeface.DEFAULT_BOLD);
-        chip.setTextColor(ACCENT);
+        chip.setTextColor(accent);
         GradientDrawable g = new GradientDrawable();
         g.setCornerRadius(dp(20));
-        g.setColor((ACCENT & 0xFFFFFF) | 0x1C000000);
+        g.setColor((accent & 0xFFFFFF) | 0x1C000000);
         chip.setBackground(g);
         chip.setPadding(dp(10), dp(5), dp(10), dp(5));
         top.addView(chip, wrap());
@@ -168,27 +163,29 @@ public class MainActivity extends Activity {
     }
 
     private View bottomNav() {
-        FrameLayout wrap = new FrameLayout(this);
+        FrameLayout host = new FrameLayout(this);
         GradientDrawable bg = new GradientDrawable();
         bg.setCornerRadii(new float[]{dp(22), dp(22), dp(22), dp(22), 0, 0, 0, 0});
-        bg.setColor(NAV_BG);
-        wrap.setBackground(bg);
-        wrap.setElevation(dp(14));
+        bg.setColor(navBg);
+        host.setBackground(bg);
+        host.setElevation(dp(14));
 
         indicator = new View(this);
         GradientDrawable ig = new GradientDrawable();
         ig.setCornerRadius(dp(2));
-        ig.setColor(ACCENT);
+        ig.setColor(accent);
         indicator.setBackground(ig);
-        FrameLayout.LayoutParams ip = new FrameLayout.LayoutParams(dp(18), dp(3), Gravity.TOP);
+        FrameLayout.LayoutParams ip =
+                new FrameLayout.LayoutParams(dp(18), dp(3), Gravity.TOP);
         ip.topMargin = dp(2);
-        wrap.addView(indicator, ip);
+        host.addView(indicator, ip);
 
         bar = new LinearLayout(this);
         bar.setOrientation(LinearLayout.HORIZONTAL);
         bar.setPadding(dp(8), dp(8), dp(8), dp(10));
-        wrap.addView(bar, new FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
+        host.addView(bar, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT));
 
         tabItems = new LinearLayout[TABS.length];
         tabIcons = new ImageView[TABS.length];
@@ -208,7 +205,8 @@ public class MainActivity extends Activity {
             iconWrap.setBackground(chipBg);
             ImageView icon = new ImageView(this);
             icon.setImageResource(TAB_ICONS[i]);
-            iconWrap.addView(icon, new FrameLayout.LayoutParams(dp(20), dp(20), Gravity.CENTER));
+            iconWrap.addView(icon, new FrameLayout.LayoutParams(
+                    dp(20), dp(20), Gravity.CENTER));
             LinearLayout.LayoutParams iwp = new LinearLayout.LayoutParams(dp(40), dp(32));
             iwp.topMargin = dp(3);
             item.addView(iconWrap, iwp);
@@ -223,10 +221,10 @@ public class MainActivity extends Activity {
             bar.addView(item, new LinearLayout.LayoutParams(0,
                     LinearLayout.LayoutParams.MATCH_PARENT, 1f));
             tabItems[i] = item;
-            tabIcons[i] = (ImageView) iconWrap.getChildAt(0);
+            tabIcons[i] = icon;
             tabLabels[i] = label;
         }
-        return wrap;
+        return host;
     }
 
     private void select(int idx, boolean animate) {
@@ -234,16 +232,18 @@ public class MainActivity extends Activity {
         curTab = idx;
         for (int i = 0; i < TABS.length; i++) {
             boolean on = i == idx;
-            tabIcons[i].setColorFilter(on ? ACCENT : IDLE);
-            tabLabels[i].setTextColor(on ? ACCENT : IDLE);
+            tabIcons[i].setColorFilter(on ? accent : idle);
+            tabLabels[i].setTextColor(on ? accent : idle);
             View chipWrap = (View) tabIcons[i].getParent();
             GradientDrawable g = new GradientDrawable();
             g.setCornerRadius(dp(14));
-            g.setColor(on ? (ACCENT & 0xFFFFFF) | 0x22000000 : 0x00000000);
+            g.setColor(on ? (accent & 0xFFFFFF) | 0x22000000 : 0x00000000);
             chipWrap.setBackground(g);
         }
         bar.post(() -> {
-            if (bar.getWidth() <= 0) return;
+            if (bar.getWidth() <= 0) {
+                return;
+            }
             View item = tabItems[idx];
             float target = bar.getX() + item.getX() + item.getWidth() / 2f - dp(9);
             if (animate && !first) {
@@ -260,17 +260,20 @@ public class MainActivity extends Activity {
     }
 
     private void swapPage(int idx, boolean animate) {
-        View page;
-        if (idx == 0) page = pageStatus();
-        else if (idx == 1) page = pageFeatures();
-        else page = pageTools();
-        pageHost.removeAllViews();
-        pageCol = new LinearLayout(this);
+        LinearLayout pageCol = new LinearLayout(this);
         pageCol.setOrientation(LinearLayout.VERTICAL);
         pageCol.setPadding(dp(16), dp(8), dp(16), dp(20));
-        pageCol.addView(page, match());
+        if (idx == 0) {
+            buildStatusPage(pageCol);
+        } else if (idx == 1) {
+            buildFeaturesPage(pageCol);
+        } else {
+            buildToolsPage(pageCol);
+        }
+        pageHost.removeAllViews();
         pageHost.addView(pageCol, new FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT));
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT));
         if (animate) {
             pageCol.setAlpha(0f);
             pageCol.setTranslationY(dp(12));
@@ -279,38 +282,34 @@ public class MainActivity extends Activity {
         }
     }
 
-    private void refreshPage() {
-        if (curTab >= 0) swapPage(curTab, false);
-    }
+    // ─────────────────────────── 状态页 ───────────────────────────
 
-    // ── 页面 ──
-
-    private View pageStatus() {
-        LinearLayout col = col();
-        col.addView(hero(), match(0, 0, 0, 14));
-        col.addView(scopeCard(), match(0, 0, 0, 14));
+    private void buildStatusPage(LinearLayout col) {
+        col.addView(heroCard(), rowOf(LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT, 0, 0, 0, dp(14)));
+        col.addView(scopeCard(), rowOf(LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT, 0, 0, 0, dp(14)));
 
         LinearLayout steps = card();
-        steps.addView(sectionHead(ACCENT, R.drawable.ic_tab_status, "使用步骤", "三步开始使用"));
+        steps.addView(head(accent, R.drawable.ic_tab_status, "使用步骤", "三步开始使用"));
         addRows(steps, tip("1. 在 LSPosed 中启用本模块并勾选作用域\n"
                 + "2. 打开各分区中的功能开关\n"
                 + "3. 标注「重启生效」的开关需重启对应应用或手机"));
-        col.addView(steps, match(0, 0, 0, 8));
-        return col;
+        col.addView(steps, rowOf(LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT, 0, 0, 0, dp(8)));
     }
 
-    private View hero() {
+    private View heroCard() {
         LinearLayout hero = new LinearLayout(this);
         hero.setOrientation(LinearLayout.VERTICAL);
-        GradientDrawable g = new GradientDrawable(GradientDrawable.Orientation.TL_BR,
-                new int[]{HERO_A, HERO_B});
+        GradientDrawable g = new GradientDrawable(
+                GradientDrawable.Orientation.TL_BR, new int[]{heroA, heroB});
         g.setCornerRadius(dp(22));
         hero.setBackground(g);
         hero.setPadding(dp(20), dp(18), dp(20), dp(18));
 
         LinearLayout row = new LinearLayout(this);
         row.setGravity(Gravity.CENTER_VERTICAL);
-
         LinearLayout col = new LinearLayout(this);
         col.setOrientation(LinearLayout.VERTICAL);
         TextView t = new TextView(this);
@@ -328,10 +327,10 @@ public class MainActivity extends Activity {
                 LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
 
         Switch master = new Switch(this);
-        master.setChecked(readBool("hook_master"));
-        tintWhite(master, readBool("hook_master"));
+        master.setChecked(hookPrefs.getBoolean(FeatureKeys.MASTER, true));
+        tintWhite(master, master.isChecked());
         master.setOnCheckedChangeListener((b, v) -> {
-            writeBool("hook_master", v);
+            hookPrefs.edit().putBoolean(FeatureKeys.MASTER, v).apply();
             tintWhite(master, v);
         });
         row.addView(master, wrap());
@@ -347,7 +346,8 @@ public class MainActivity extends Activity {
         dot.setBackground(dg);
         stat.addView(dot, new LinearLayout.LayoutParams(dp(7), dp(7)));
         TextView cap = new TextView(this);
-        cap.setText("  配置通道实时生效 · 已启用 " + enabledCount() + " / " + FeatureKeys.SWITCHES.length + " 项功能");
+        cap.setText("  配置通道实时生效 · 已启用 "
+                + enabledCount() + " / " + FeatureKeys.SWITCHES.length + " 项功能");
         cap.setTextSize(11);
         cap.setTextColor(0xB8FFFFFF);
         stat.addView(cap, wrap());
@@ -357,13 +357,17 @@ public class MainActivity extends Activity {
 
     private int enabledCount() {
         int n = 0;
-        for (String[] s : FeatureKeys.SWITCHES) if (readBool(s[0])) n++;
+        for (String[] s : FeatureKeys.SWITCHES) {
+            if (cfg.getBoolean(s[0], false)) {
+                n++;
+            }
+        }
         return n;
     }
 
     private View scopeCard() {
         LinearLayout card = card();
-        card.addView(sectionHead(C_APPS, R.drawable.ic_tab_status,
+        card.addView(head(0xFFFF9F43, R.drawable.ic_sec_shield,
                 "作用域应用", "在 LSPosed 勾选后可在此单独停用"));
         java.util.List<View> rows = new java.util.ArrayList<>();
         String[] scopes = getResources().getStringArray(R.array.xposed_scope);
@@ -378,89 +382,114 @@ public class MainActivity extends Activity {
         return card;
     }
 
-    private View pageFeatures() {
-        LinearLayout col = col();
+    // ─────────────────────────── 功能页 ───────────────────────────
+
+    private void buildFeaturesPage(LinearLayout col) {
         String[] groups = FeatureKeys.GROUP_ORDER;
         for (int g = 0; g < groups.length; g++) {
             LinearLayout card = card();
             int color = GROUP_COLORS[g % GROUP_COLORS.length];
-            card.addView(sectionHead(color, GROUP_ICONS[g % GROUP_ICONS.length],
+            card.addView(head(color, GROUP_ICONS[g % GROUP_ICONS.length],
                     groups[g], GROUP_DESCS[g % GROUP_DESCS.length]));
-            String[] keys = FeatureKeys.groupSwitches(groups[g]);
             java.util.List<View> rows = new java.util.ArrayList<>();
-            for (String key : keys) {
-                rows.add(autoToggleRow(color, key));
-                if (FeatureKeys.LAYOUT_CUSTOM.equals(key) && readBool(key)) {
-                    rows.add(stepperRow("行数", FeatureKeys.LAYOUT_ROWS, 6, 10, C_LAYOUT));
-                    rows.add(stepperRow("列数", FeatureKeys.LAYOUT_COLS, 4, 7, C_LAYOUT));
+            for (String key : FeatureKeys.groupSwitches(groups[g])) {
+                rows.add(toggleRow(color, key));
+                if (FeatureKeys.LAYOUT_CUSTOM.equals(key) && cfg.getBoolean(key, false)) {
+                    rows.add(stepperRow("行数", FeatureKeys.P_LAYOUT_ROWS, 6, 10, color));
+                    rows.add(stepperRow("列数", FeatureKeys.P_LAYOUT_COLS, 4, 7, color));
                 }
             }
             addRows(card, rows.toArray(new View[0]));
-            col.addView(card, match(0, 0, 0, g == groups.length - 1 ? 8 : 14));
+            int bottom = g == groups.length - 1 ? dp(8) : dp(14);
+            col.addView(card, rowOf(LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT, 0, 0, 0, bottom));
         }
-        return col;
     }
 
-    private View pageTools() {
-        LinearLayout col = col();
+    // ─────────────────────────── 工具页 ───────────────────────────
 
+    private void buildToolsPage(LinearLayout col) {
         LinearLayout params = card();
-        params.addView(sectionHead(C_APPS, R.drawable.ic_sec_sliders,
-                "参数设置", "整型与文本参数（-1 表示跟随系统默认）"));
+        params.addView(head(0xFFFF9F43, R.drawable.ic_sec_sliders,
+                "参数设置", "整型与文本参数（默认 表示跟随系统）"));
         java.util.List<View> rows = new java.util.ArrayList<>();
-        for (String key : FeatureKeys.INT_KEYS) {
-            if (FeatureKeys.LAYOUT_ROWS.equals(key) || FeatureKeys.LAYOUT_COLS.equals(key)) {
+        for (String key : FeatureKeys.INT_PARAMS) {
+            if (FeatureKeys.P_LAYOUT_ROWS.equals(key)
+                    || FeatureKeys.P_LAYOUT_COLS.equals(key)) {
                 continue;
             }
-            int min = FeatureKeys.MAX_SMALL_WINDOWS.equals(key) ? -1
-                    : FeatureKeys.SMALL_WIN_CORNER_RADIUS.equals(key) ? -1
-                    : FeatureKeys.SMALL_WIN_FOCUSED_SHADOW.equals(key) ? -1
-                    : FeatureKeys.SMALL_WIN_UNFOCUSED_SHADOW.equals(key) ? -1 : 0;
-            int max = FeatureKeys.MAX_SMALL_WINDOWS.equals(key) ? 9
-                    : FeatureKeys.SMALL_WIN_CORNER_RADIUS.equals(key) ? 60
-                    : FeatureKeys.SMALL_WIN_FOCUSED_SHADOW.equals(key) ? 30
-                    : FeatureKeys.SMALL_WIN_UNFOCUSED_SHADOW.equals(key) ? 30 : 10;
-            rows.add(stepperRow(PARAM_LABELS.get(key), key, min, max, C_APPS));
+            int min;
+            int max;
+            if (FeatureKeys.P_MAX_SMALL_WINDOWS.equals(key)) {
+                min = -1;
+                max = 9;
+            } else if (FeatureKeys.P_WIN_CORNER.equals(key)) {
+                min = -1;
+                max = 60;
+            } else {
+                min = -1;
+                max = 30;
+            }
+            rows.add(stepperRow(paramLabel(key), key, min, max, 0xFFFF9F43));
         }
-        for (String key : FeatureKeys.STRING_KEYS) {
-            rows.add(textRow(PARAM_LABELS.get(key), key));
+        for (String key : FeatureKeys.STR_PARAMS) {
+            rows.add(textRow(paramLabel(key), key));
         }
         addRows(params, rows.toArray(new View[0]));
-        col.addView(params, match(0, 0, 0, 14));
+        col.addView(params, rowOf(LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT, 0, 0, 0, dp(14)));
 
         LinearLayout about = card();
-        about.addView(sectionHead(C_PERM, R.drawable.ic_sec_master,
+        about.addView(head(0xFF3D8BFF, R.drawable.ic_sec_master,
                 "关于模块", "运行信息与快捷入口"));
         addRows(about,
                 staticRow("当前版本", "v" + versionName()
-                        + " · 已启用 " + enabledCount() + " / " + FeatureKeys.SWITCHES.length + " 项功能"),
+                        + " · 已启用 " + enabledCount() + " / "
+                        + FeatureKeys.SWITCHES.length + " 项功能"),
                 staticRow("配置通道", "HookStateProvider 实时下发，改动约 2 秒内生效"),
-                linkRow("打开开发者选项", () -> startActivity(
-                        new Intent(android.provider.Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS))),
+                linkRow("打开开发者选项", () -> startActivity(new Intent(
+                        android.provider.Settings
+                                .ACTION_APPLICATION_DEVELOPMENT_SETTINGS))),
                 linkRow("打开 LSPosed 管理器", () -> {
-                    Intent it = getPackageManager().getLaunchIntentForPackage("org.lsposed.manager");
-                    if (it != null) startActivity(it);
-                    else Toast.makeText(this, "未检测到 LSPosed", Toast.LENGTH_SHORT).show();
+                    Intent it = getPackageManager()
+                            .getLaunchIntentForPackage("org.lsposed.manager");
+                    if (it != null) {
+                        startActivity(it);
+                    } else {
+                        Toast.makeText(this, "未检测到 LSPosed",
+                                Toast.LENGTH_SHORT).show();
+                    }
                 }));
-        col.addView(about, match(0, 0, 0, 8));
-        return col;
+        col.addView(about, rowOf(LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT, 0, 0, 0, dp(8)));
     }
 
-    private static final java.util.Map<String, String> PARAM_LABELS = new java.util.HashMap<>();
-    static {
-        PARAM_LABELS.put(FeatureKeys.MAX_SMALL_WINDOWS, "小窗同时个数上限");
-        PARAM_LABELS.put(FeatureKeys.SMALL_WIN_CORNER_RADIUS, "小窗圆角半径（px）");
-        PARAM_LABELS.put(FeatureKeys.SMALL_WIN_FOCUSED_SHADOW, "小窗聚焦阴影");
-        PARAM_LABELS.put(FeatureKeys.SMALL_WIN_UNFOCUSED_SHADOW, "小窗失焦阴影");
-        PARAM_LABELS.put(FeatureKeys.TILE_SCRIPT, "快捷磁贴脚本命令");
-        PARAM_LABELS.put(FeatureKeys.CUSTOM_FILE_MANAGER_PKG, "自定义文件管理器包名");
-        PARAM_LABELS.put(FeatureKeys.INSTALLER_TARGET_PACKAGES, "安装重定向目标包名（逗号分隔）");
-        PARAM_LABELS.put(FeatureKeys.UNINSTALLER_TARGET_PACKAGES, "卸载重定向目标包名（逗号分隔）");
+    private static String paramLabel(String key) {
+        switch (key) {
+            case FeatureKeys.P_MAX_SMALL_WINDOWS:
+                return "小窗同时个数上限";
+            case FeatureKeys.P_WIN_CORNER:
+                return "小窗圆角半径（px）";
+            case FeatureKeys.P_WIN_FOCUS_SHADOW:
+                return "小窗聚焦阴影";
+            case FeatureKeys.P_WIN_UNFOCUS_SHADOW:
+                return "小窗失焦阴影";
+            case FeatureKeys.P_TILE_SCRIPT:
+                return "快捷磁贴脚本命令";
+            case FeatureKeys.P_FILE_MANAGER_PKG:
+                return "自定义文件管理器包名";
+            case FeatureKeys.P_INSTALLER_TARGETS:
+                return "安装重定向目标包名（逗号分隔）";
+            case FeatureKeys.P_UNINSTALLER_TARGETS:
+                return "卸载重定向目标包名（逗号分隔）";
+            default:
+                return key;
+        }
     }
 
-    // ── 行构建（只返回视图，由调用方添加）──
+    // ─────────────────────────── 行构建 ───────────────────────────
 
-    private View sectionHead(int color, int iconRes, String title, String desc) {
+    private View head(int color, int iconRes, String title, String desc) {
         LinearLayout head = new LinearLayout(this);
         head.setOrientation(LinearLayout.HORIZONTAL);
         head.setGravity(Gravity.CENTER_VERTICAL);
@@ -483,19 +512,19 @@ public class MainActivity extends Activity {
         t.setText(title);
         t.setTextSize(14);
         t.setTypeface(Typeface.DEFAULT_BOLD);
-        t.setTextColor(INK);
+        t.setTextColor(ink);
         col.addView(t, wrap(dp(10), 0, 0, 0));
         TextView d = new TextView(this);
         d.setText(desc);
         d.setTextSize(10);
-        d.setTextColor(SUB);
+        d.setTextColor(sub);
         col.addView(d, wrap(dp(10), dp(1), 0, 0));
         head.addView(col, new LinearLayout.LayoutParams(0,
                 LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
         return head;
     }
 
-    private View autoToggleRow(int color, final String key) {
+    private View toggleRow(int color, final String key) {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
@@ -503,23 +532,22 @@ public class MainActivity extends Activity {
         row.setPadding(dp(10), dp(8), dp(10), dp(8));
         row.setBackground(ripple(dp(14)));
 
-        LinearLayout textCol = new LinearLayout(this);
-        textCol.setOrientation(LinearLayout.VERTICAL);
         TextView t = new TextView(this);
         t.setText(FeatureKeys.title(key));
         t.setTextSize(14);
-        t.setTextColor(INK);
-        textCol.addView(t, wrap());
-        row.addView(textCol, new LinearLayout.LayoutParams(0,
+        t.setTextColor(ink);
+        row.addView(t, new LinearLayout.LayoutParams(0,
                 LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
 
         Switch sw = new Switch(this);
-        sw.setChecked(readBool(key));
-        tint(sw, color, readBool(key));
+        sw.setChecked(cfg.getBoolean(key, false));
+        tint(sw, color, sw.isChecked());
         sw.setOnCheckedChangeListener((b, v) -> {
-            writeBool(key, v);
+            cfg.edit().putBoolean(key, v).apply();
             tint(sw, color, v);
-            if (FeatureKeys.LAYOUT_CUSTOM.equals(key)) refreshPage();
+            if (FeatureKeys.LAYOUT_CUSTOM.equals(key)) {
+                select(curTab, false);
+            }
         });
         row.addView(sw, wrap());
         return row;
@@ -531,19 +559,18 @@ public class MainActivity extends Activity {
         row.setPadding(dp(12), dp(6), dp(12), dp(6));
         GradientDrawable g = new GradientDrawable();
         g.setCornerRadius(dp(12));
-        g.setColor(FIELD_BG);
+        g.setColor(fieldBg);
         row.setBackground(g);
 
         TextView t = new TextView(this);
         t.setText(label);
         t.setTextSize(12);
-        t.setTextColor(INK);
+        t.setTextColor(ink);
         row.addView(t, new LinearLayout.LayoutParams(0,
                 LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
 
         final TextView val = new TextView(this);
-        val.setText(intLabel(cfg.getInt(key,
-                (Integer) FeatureKeys.defaultValue(key))));
+        val.setText(intLabel(cfg.getInt(key, (Integer) FeatureKeys.defaultValue(key))));
         val.setTextSize(14);
         val.setTypeface(Typeface.DEFAULT_BOLD);
         val.setTextColor(color);
@@ -582,13 +609,13 @@ public class MainActivity extends Activity {
         row.setPadding(dp(12), dp(6), dp(12), dp(6));
         GradientDrawable g = new GradientDrawable();
         g.setCornerRadius(dp(12));
-        g.setColor(FIELD_BG);
+        g.setColor(fieldBg);
         row.setBackground(g);
 
         TextView t = new TextView(this);
         t.setText(label);
         t.setTextSize(12);
-        t.setTextColor(INK);
+        t.setTextColor(ink);
         row.addView(t, new LinearLayout.LayoutParams(0,
                 LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
 
@@ -598,19 +625,20 @@ public class MainActivity extends Activity {
         state.setText(has ? "已设置" : "未设置");
         state.setTextSize(11);
         state.setTypeface(Typeface.DEFAULT_BOLD);
-        state.setTextColor(has ? C_APPS : SUB);
+        state.setTextColor(has ? 0xFFFF9F43 : sub);
         row.addView(state, wrap());
 
         row.setOnClickListener(v -> {
-            final android.widget.EditText input = new android.widget.EditText(this);
+            final EditText input = new EditText(this);
             input.setText(cur);
             input.setSelection(input.getText() == null ? 0 : input.getText().length());
-            input.setSingleLine(FeatureKeys.TILE_SCRIPT.equals(key));
-            new android.app.AlertDialog.Builder(this)
+            input.setSingleLine(FeatureKeys.P_TILE_SCRIPT.equals(key));
+            new AlertDialog.Builder(this)
                     .setTitle(label)
                     .setView(input)
                     .setPositiveButton("保存", (d, w) -> {
-                        String s = input.getText() == null ? "" : input.getText().toString().trim();
+                        String s = input.getText() == null
+                                ? "" : input.getText().toString().trim();
                         cfg.edit().putString(key, s).apply();
                         state.setText(s.isEmpty() ? "未设置" : "已设置");
                     })
@@ -629,7 +657,7 @@ public class MainActivity extends Activity {
         b.setGravity(Gravity.CENTER);
         GradientDrawable g = new GradientDrawable();
         g.setShape(GradientDrawable.OVAL);
-        g.setColor(CARD_BG);
+        g.setColor(cardBg);
         b.setBackground(g);
         b.setOnClickListener(v -> onClick.run());
         return b;
@@ -655,13 +683,13 @@ public class MainActivity extends Activity {
         TextView t = new TextView(this);
         t.setText(appLabel(pkg));
         t.setTextSize(13);
-        t.setTextColor(INK);
+        t.setTextColor(ink);
         t.setMaxLines(1);
         textCol.addView(t, wrap());
         TextView p = new TextView(this);
         p.setText(pkg);
         p.setTextSize(9);
-        p.setTextColor(SUB);
+        p.setTextColor(sub);
         p.setMaxLines(1);
         textCol.addView(p, wrap(0, dp(1), 0, 0));
         LinearLayout.LayoutParams tp = new LinearLayout.LayoutParams(0,
@@ -672,16 +700,16 @@ public class MainActivity extends Activity {
         Switch sw = new Switch(this);
         final String prefKey = "hook_" + pkg;
         sw.setChecked(hookPrefs.getBoolean(prefKey, true));
-        tint(sw, ACCENT, hookPrefs.getBoolean(prefKey, true));
+        tint(sw, accent, sw.isChecked());
         sw.setOnCheckedChangeListener((b, v) -> {
             hookPrefs.edit().putBoolean(prefKey, v).apply();
-            tint(sw, ACCENT, v);
+            tint(sw, accent, v);
         });
         row.addView(sw, wrap());
         return row;
     }
 
-    private View staticRow(String title, String sub) {
+    private View staticRow(String title, String subText) {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
@@ -692,12 +720,12 @@ public class MainActivity extends Activity {
         TextView t = new TextView(this);
         t.setText(title);
         t.setTextSize(13);
-        t.setTextColor(INK);
+        t.setTextColor(ink);
         textCol.addView(t, wrap());
         TextView s = new TextView(this);
-        s.setText(sub);
+        s.setText(subText);
         s.setTextSize(10);
-        s.setTextColor(SUB);
+        s.setTextColor(sub);
         textCol.addView(s, wrap(0, dp(1), 0, 0));
         row.addView(textCol, new LinearLayout.LayoutParams(0,
                 LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
@@ -714,13 +742,13 @@ public class MainActivity extends Activity {
         TextView t = new TextView(this);
         t.setText(title);
         t.setTextSize(14);
-        t.setTextColor(INK);
+        t.setTextColor(ink);
         row.addView(t, new LinearLayout.LayoutParams(0,
                 LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
         TextView chev = new TextView(this);
         chev.setText("›");
         chev.setTextSize(16);
-        chev.setTextColor(SUB);
+        chev.setTextColor(sub);
         row.addView(chev, wrap());
         row.setOnClickListener(v -> onClick.run());
         return row;
@@ -731,7 +759,7 @@ public class MainActivity extends Activity {
         t.setText(text);
         t.setTextSize(12);
         t.setLineSpacing(dp(2), 1f);
-        t.setTextColor(SUB);
+        t.setTextColor(sub);
         t.setPadding(dp(10), dp(10), dp(10), dp(12));
         return t;
     }
@@ -739,27 +767,26 @@ public class MainActivity extends Activity {
     private void addRows(LinearLayout card, View... rows) {
         for (int i = 0; i < rows.length; i++) {
             if (i > 0) {
-                View line = new View(this);
-                line.setBackgroundColor(LINE);
-                card.addView(line, match(12, 0, 12, 0, dp(1)));
+                View ln = new View(this);
+                ln.setBackgroundColor(line);
+                LinearLayout.LayoutParams lp = rowOf(
+                        LinearLayout.LayoutParams.MATCH_PARENT, dp(1));
+                lp.setMargins(dp(12), 0, dp(12), 0);
+                card.addView(ln, lp);
             }
             card.addView(rows[i], match());
         }
     }
 
-    // ── 容器 ──
-
-    private LinearLayout col() {
-        return new LinearLayout(this);
-    }
+    // ─────────────────────────── 容器与绘制 ───────────────────────────
 
     private LinearLayout card() {
         LinearLayout c = new LinearLayout(this);
         c.setOrientation(LinearLayout.VERTICAL);
         GradientDrawable g = new GradientDrawable();
         g.setCornerRadius(dp(20));
-        g.setColor(CARD_BG);
-        g.setStroke(dp(1), LINE);
+        g.setColor(cardBg);
+        g.setStroke(dp(1), line);
         c.setBackground(g);
         c.setElevation(dark ? 0 : dp(1));
         c.setPadding(dp(2), dp(2), dp(2), dp(4));
@@ -770,12 +797,13 @@ public class MainActivity extends Activity {
         GradientDrawable mask = new GradientDrawable();
         mask.setCornerRadius(dp(radiusDp));
         mask.setColor(0xFFFFFFFF);
-        return new RippleDrawable(ColorStateList.valueOf(RIPPLE), null, mask);
+        return new RippleDrawable(ColorStateList.valueOf(ripple), null, mask);
     }
 
     private void tint(Switch sw, int color, boolean on) {
         if (sw.getThumbDrawable() != null) {
-            sw.getThumbDrawable().setTintList(ColorStateList.valueOf(on ? color : 0xFFD4D4DC));
+            sw.getThumbDrawable().setTintList(ColorStateList.valueOf(
+                    on ? color : 0xFFD4D4DC));
         }
         if (sw.getTrackDrawable() != null) {
             sw.getTrackDrawable().setTintList(ColorStateList.valueOf(
@@ -799,28 +827,12 @@ public class MainActivity extends Activity {
             PackageManager pm = getPackageManager();
             PackageInfo info = pm.getPackageInfo(pkg, 0);
             CharSequence name = pm.getApplicationLabel(info.applicationInfo);
-            if (name != null) return name.toString();
+            if (name != null) {
+                return name.toString();
+            }
         } catch (Throwable ignored) {
         }
         return pkg;
-    }
-
-    // ── 配置读写 ──
-
-    private boolean readBool(String key) {
-        if ("hook_master".equals(key)) {
-            return hookPrefs.getBoolean("hook_master", true);
-        }
-        return cfg.getBoolean(key, false);
-    }
-
-    private void writeBool(String key, boolean v) {
-        if ("hook_master".equals(key)) {
-            hookPrefs.edit().putBoolean("hook_master", v).apply();
-            cfg.edit().putBoolean("b_hook_master", v).apply();
-            return;
-        }
-        cfg.edit().putBoolean(key, v).putBoolean("b_" + key, v).apply();
     }
 
     private String versionName() {
@@ -832,37 +844,44 @@ public class MainActivity extends Activity {
         }
     }
 
-    // ── 布局参数 ──
+    // ─────────────────────────── 布局参数 ───────────────────────────
 
     private LinearLayout.LayoutParams wrap() {
         return new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
     }
 
     private LinearLayout.LayoutParams wrap(int l, int t, int r, int b) {
-        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        LinearLayout.LayoutParams p = wrap();
         p.setMargins(dp(l), dp(t), dp(r), dp(b));
         return p;
     }
 
     private LinearLayout.LayoutParams match() {
         return new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
     }
 
     private LinearLayout.LayoutParams match(int l, int t, int r, int b) {
-        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        LinearLayout.LayoutParams p = match();
         p.setMargins(dp(l), dp(t), dp(r), dp(b));
         return p;
     }
 
-    private LinearLayout.LayoutParams match(int l, int t, int r, int b, int h) {
-        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, h);
+    private LinearLayout.LayoutParams rowOf(int w, int h) {
+        return new LinearLayout.LayoutParams(w, h);
+    }
+
+    private LinearLayout.LayoutParams rowOf(int w, int h, int l, int t, int r, int b) {
+        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(w, h);
         p.setMargins(dp(l), dp(t), dp(r), dp(b));
         return p;
+    }
+
+    private LinearLayout.LayoutParams rowOf(int w, int h, float weight) {
+        return new LinearLayout.LayoutParams(w, h, weight);
     }
 
     private int dp(int v) {

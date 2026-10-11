@@ -5,15 +5,18 @@ import android.os.Bundle;
 import android.os.SystemClock;
 
 /**
- * Hook 侧配置读取（2 秒缓存）。
- * 优先走 HookStateProvider（app 进程，设置改动即时生效），
- * 失败回退到框架远端偏好（system_server 等无 Application 的进程）。
+ * hook 侧配置读取，带 2 秒缓存。
  *
- * Modern 入口注入 remoteBundle(key)，Legacy 入口注入 XSharedPreferences 读取器。
+ * 读取顺序：
+ *   1. HookStateProvider（app 进程可用时，设置改动约 2 秒内生效）
+ *   2. 入口注入的远端偏好读取器（system_server 等无 Application 进程的回退路径）
+ *   3. 首次完全无数据时按 FeatureKeys 默认值引导，保证行为可预期
+ *
+ * 键风格：b_<key> 布尔 / i_<key> 整型 / s_<key> 字符串，由 Provider 扁平化导出。
  */
 public final class Cfg {
 
-    /** 远端偏好读取器：返回 {b_...,i_...,s_...} 风格 Bundle，读不到返回 null */
+    /** 远端偏好读取器接口：由双入口各自实现注入 */
     public interface Remote {
         Bundle read(String key);
     }
@@ -21,102 +24,102 @@ public final class Cfg {
     public static final Uri STATE_URI =
             Uri.parse("content://com.xiaokan.colorbox.hookstate");
 
-    private static Remote sRemote;
-    private static android.content.ContentResolver sResolver;
-    private static long sLastFetch;
-    private static Bundle sCache = new Bundle();
-    private static boolean sFromRemote;
+    private static Remote remote;
+    private static android.content.ContentResolver resolver;
+    private static long lastFetch;
+    private static Bundle cache = new Bundle();
 
-    public static void setRemote(Remote remote) {
-        sRemote = remote;
+    public static void setRemote(Remote r) {
+        remote = r;
     }
 
     private static void refresh() {
         long now = SystemClock.uptimeMillis();
-        if (now - sLastFetch < 2000) return;
-        sLastFetch = now;
+        if (now - lastFetch < 2000) {
+            return;
+        }
+        lastFetch = now;
         Bundle b = null;
         try {
-            android.content.ContentResolver r = resolver();
+            android.content.ContentResolver r = cr();
             if (r != null) {
                 b = r.call(STATE_URI, "cfgall", null, null);
             }
         } catch (Throwable ignored) {
         }
-        sFromRemote = false;
         if (b == null || b.isEmpty()) {
             try {
-                if (sRemote != null) {
-                    b = sRemote.read("cfgall");
-                    sFromRemote = b != null && !b.isEmpty();
+                if (remote != null) {
+                    b = remote.read("cfgall");
                 }
             } catch (Throwable ignored) {
             }
         }
         if (b != null && !b.isEmpty()) {
-            sCache = b;
-        } else if (!sCache.containsKey("bootstrapped")) {
-            sCache.putBoolean("bootstrapped", true);
-            sCache.putBoolean("b_hook_master", true);
-            // 首次无数据：填默认值，保证 hook 行为可预期（默认全部关闭）
+            cache = b;
+            return;
+        }
+        if (!cache.containsKey("bootstrapped")) {
+            cache.putBoolean("bootstrapped", true);
             for (String[] s : FeatureKeys.SWITCHES) {
-                if (!sCache.containsKey("b_" + s[0])) {
-                    sCache.putBoolean("b_" + s[0], (Boolean) FeatureKeys.defaultValue(s[0]));
-                }
+                cache.putBoolean("b_" + s[0], (Boolean) FeatureKeys.defaultValue(s[0]));
             }
-            sCache.putInt("i_" + FeatureKeys.LAYOUT_ROWS,
-                    (Integer) FeatureKeys.defaultValue(FeatureKeys.LAYOUT_ROWS));
-            sCache.putInt("i_" + FeatureKeys.LAYOUT_COLS,
-                    (Integer) FeatureKeys.defaultValue(FeatureKeys.LAYOUT_COLS));
-            for (String sk : FeatureKeys.STRING_KEYS) {
-                sCache.putString("s_" + sk, (String) FeatureKeys.defaultValue(sk));
+            for (String k : FeatureKeys.INT_PARAMS) {
+                cache.putInt("i_" + k, (Integer) FeatureKeys.defaultValue(k));
+            }
+            for (String k : FeatureKeys.STR_PARAMS) {
+                cache.putString("s_" + k, (String) FeatureKeys.defaultValue(k));
             }
         }
     }
 
-    private static android.content.ContentResolver resolver() {
-        if (sResolver != null) return sResolver;
+    private static android.content.ContentResolver cr() {
+        if (resolver != null) {
+            return resolver;
+        }
         try {
             Object app = Class.forName("android.app.ActivityThread")
                     .getMethod("currentApplication").invoke(null);
             if (app instanceof android.content.Context) {
-                sResolver = ((android.content.Context) app).getContentResolver();
+                resolver = ((android.content.Context) app).getContentResolver();
+                return resolver;
             }
         } catch (Throwable ignored) {
         }
-        if (sResolver == null) {
-            try {
-                Object at = Class.forName("android.app.ActivityThread")
-                        .getMethod("currentActivityThread").invoke(null);
-                if (at != null) {
-                    Object ctx = at.getClass().getMethod("getSystemContext").invoke(at);
-                    if (ctx instanceof android.content.Context) {
-                        sResolver = ((android.content.Context) ctx).getContentResolver();
-                    }
+        try {
+            Object at = Class.forName("android.app.ActivityThread")
+                    .getMethod("currentActivityThread").invoke(null);
+            if (at != null) {
+                Object ctx = at.getClass().getMethod("getSystemContext").invoke(at);
+                if (ctx instanceof android.content.Context) {
+                    resolver = ((android.content.Context) ctx).getContentResolver();
                 }
-            } catch (Throwable ignored) {
             }
+        } catch (Throwable ignored) {
         }
-        return sResolver;
+        return resolver;
     }
 
-    public static boolean bool(String key) {
+    /** 功能开关读取；总门控关闭时一律返回 false */
+    public static boolean on(String key) {
         refresh();
-        if (!sCache.getBoolean("b_hook_master", true)) return false;
-        return sCache.getBoolean("b_" + key,
+        if (!cache.getBoolean("b_" + FeatureKeys.MASTER, true)) {
+            return false;
+        }
+        return cache.getBoolean("b_" + key,
                 (Boolean) FeatureKeys.defaultValue(key));
     }
 
-    public static int intv(String key) {
-        refresh();
-        Integer d = (Integer) FeatureKeys.defaultValue(key);
-        return sCache.getInt("i_" + key, d == null ? 0 : d);
-    }
-
-    public static String str(String key) {
+    public static int num(String key) {
         refresh();
         Object d = FeatureKeys.defaultValue(key);
-        return sCache.getString("s_" + key, d instanceof String ? (String) d : "");
+        return cache.getInt("i_" + key, d instanceof Integer ? (Integer) d : 0);
+    }
+
+    public static String text(String key) {
+        refresh();
+        Object d = FeatureKeys.defaultValue(key);
+        return cache.getString("s_" + key, d instanceof String ? (String) d : "");
     }
 
     private Cfg() {
